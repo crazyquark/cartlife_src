@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Cart Life
+Comment=Street vendors, rent, coffee and a cat
+Exec=AppRun %F
+Icon=cartlife
+Categories=Game;Simulation;
+Terminal=false

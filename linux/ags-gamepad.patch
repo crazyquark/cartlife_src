@@ -1,0 +1,223 @@
+diff --git a/Engine/ac/sys_events.cpp b/Engine/ac/sys_events.cpp
+index 7945041..15e276d 100644
+--- a/Engine/ac/sys_events.cpp
++++ b/Engine/ac/sys_events.cpp
+@@ -360,6 +360,166 @@ void ags_drop_next_inputevent()
+         g_inputEvtQueue.pop_front();
+ }
+ 
++
++#if AGS_PLATFORM_OS_LINUX
++// ----------------------------------------------------------------------------
++// GAMEPAD (added for Cart Life on the Steam Deck)
++// ----------------------------------------------------------------------------
++// The game only reads the keyboard and the mouse, so a controller is turned
++// into both: d-pad and left stick = arrow keys, right stick = cursor,
++// A / R2 / right stick click = left click, X = Enter, Y = Space (the game's
++// menu), B and Start = Escape, Back = Tab.
++
++static SDL_GameController *gp_ctrl = nullptr;
++static bool gp_held[SDL_NUM_SCANCODES];
++static int gp_stick_dir[2]; // left stick: -1, 0, 1 per axis
++static Uint32 gp_last_ticks = 0;
++static float gp_accum_x = 0.f, gp_accum_y = 0.f;
++
++static void gp_key(SDL_Scancode sc, bool down)
++{
++    if (gp_held[sc] == down) return;
++    gp_held[sc] = down;
++    SDL_Event ev = {};
++    ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
++    ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
++    ev.key.keysym.scancode = sc;
++    ev.key.keysym.sym = SDL_GetKeyFromScancode(sc);
++    SDL_PushEvent(&ev);
++    if (down && sc == SDL_SCANCODE_SPACE)
++    { // old games read printable keys from text input
++        SDL_Event tx = {};
++        tx.type = SDL_TEXTINPUT;
++        tx.text.text[0] = ' ';
++        SDL_PushEvent(&tx);
++    }
++}
++
++static void gp_click(bool down)
++{
++    SDL_Event ev = {};
++    ev.type = down ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
++    ev.button.state = down ? SDL_PRESSED : SDL_RELEASED;
++    ev.button.button = SDL_BUTTON_LEFT;
++    ev.button.clicks = 1;
++    ev.button.x = sys_mouse_x;
++    ev.button.y = sys_mouse_y;
++    SDL_PushEvent(&ev);
++}
++
++static void gp_release_all()
++{
++    for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
++        if (gp_held[i]) gp_key(static_cast<SDL_Scancode>(i), false);
++    gp_stick_dir[0] = gp_stick_dir[1] = 0;
++}
++
++static void gp_open_first()
++{
++    if (gp_ctrl) return;
++    for (int i = 0; i < SDL_NumJoysticks(); ++i)
++    {
++        if (SDL_IsGameController(i) && (gp_ctrl = SDL_GameControllerOpen(i)))
++        {
++            Debug::Printf("Gamepad: %s", SDL_GameControllerName(gp_ctrl));
++            return;
++        }
++    }
++}
++
++static void gp_init()
++{
++    static bool tried = false;
++    if (tried) return;
++    tried = true;
++    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0"); // positions, not labels
++    if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
++        Debug::Printf("Gamepad: SDL init failed: %s", SDL_GetError());
++    gp_open_first();
++}
++
++static void gp_button(Uint8 button, bool down)
++{
++    switch (button)
++    {
++    case SDL_CONTROLLER_BUTTON_DPAD_UP:    gp_key(SDL_SCANCODE_UP, down); break;
++    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  gp_key(SDL_SCANCODE_DOWN, down); break;
++    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  gp_key(SDL_SCANCODE_LEFT, down); break;
++    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: gp_key(SDL_SCANCODE_RIGHT, down); break;
++    case SDL_CONTROLLER_BUTTON_A:
++    case SDL_CONTROLLER_BUTTON_RIGHTSTICK: gp_click(down); break;
++    case SDL_CONTROLLER_BUTTON_X:          gp_key(SDL_SCANCODE_RETURN, down); break;
++    case SDL_CONTROLLER_BUTTON_Y:          gp_key(SDL_SCANCODE_SPACE, down); break;
++    case SDL_CONTROLLER_BUTTON_B:
++    case SDL_CONTROLLER_BUTTON_START:      gp_key(SDL_SCANCODE_ESCAPE, down); break;
++    case SDL_CONTROLLER_BUTTON_BACK:       gp_key(SDL_SCANCODE_TAB, down); break;
++    default: break;
++    }
++}
++
++static void gp_axis(Uint8 axis, Sint16 value)
++{
++    const float v = value / 32767.f;
++    if (axis == SDL_CONTROLLER_AXIS_LEFTX || axis == SDL_CONTROLLER_AXIS_LEFTY)
++    {
++        const int i = axis == SDL_CONTROLLER_AXIS_LEFTX ? 0 : 1;
++        int dir = gp_stick_dir[i];
++        if (v > 0.55f) dir = 1;
++        else if (v < -0.55f) dir = -1;
++        else if (std::fabs(v) < 0.35f) dir = 0; // hysteresis
++        if (dir == gp_stick_dir[i]) return;
++        gp_stick_dir[i] = dir;
++        const SDL_Scancode neg = i == 0 ? SDL_SCANCODE_LEFT : SDL_SCANCODE_UP;
++        const SDL_Scancode pos = i == 0 ? SDL_SCANCODE_RIGHT : SDL_SCANCODE_DOWN;
++        gp_key(neg, dir < 0);
++        gp_key(pos, dir > 0);
++    }
++    else if (axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
++    {
++        static bool down = false;
++        const bool now = down ? v > 0.3f : v > 0.6f;
++        if (now != down) { down = now; gp_click(now); }
++    }
++}
++
++// Right stick moves the cursor; called every time the engine polls events.
++static void gp_update()
++{
++    gp_init();
++    const Uint32 now = SDL_GetTicks();
++    const float dt = gp_last_ticks ? std::min<Uint32>(now - gp_last_ticks, 100) / 1000.f : 0.f;
++    gp_last_ticks = now;
++    if (!gp_ctrl || dt <= 0.f) return;
++    float x = SDL_GameControllerGetAxis(gp_ctrl, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.f;
++    float y = SDL_GameControllerGetAxis(gp_ctrl, SDL_CONTROLLER_AXIS_RIGHTY) / 32767.f;
++    const float mag = std::sqrt(x * x + y * y);
++    if (mag < 0.15f) return;
++    SDL_Window *win = sys_get_window();
++    if (!win) return;
++    int w, h;
++    SDL_GetWindowSize(win, &w, &h);
++    // speed curve: slow near the center for aiming, a screen width in ~0.8 s at full tilt
++    const float k = (mag - 0.15f) / 0.85f;
++    const float speed = w * 1.25f * k * k / mag;
++    gp_accum_x += x * speed * dt;
++    gp_accum_y += y * speed * dt;
++    const int dx = static_cast<int>(gp_accum_x), dy = static_cast<int>(gp_accum_y);
++    if (dx == 0 && dy == 0) return;
++    gp_accum_x -= dx;
++    gp_accum_y -= dy;
++    const int nx = Math::Clamp(sys_mouse_x + dx, 0, w - 1);
++    const int ny = Math::Clamp(sys_mouse_y + dy, 0, h - 1);
++    SDL_WarpMouseInWindow(win, nx, ny);
++    SDL_Event ev = {};
++    ev.type = SDL_MOUSEMOTION;
++    ev.motion.x = nx;
++    ev.motion.y = ny;
++    ev.motion.xrel = nx - sys_mouse_x;
++    ev.motion.yrel = ny - sys_mouse_y;
++    SDL_PushEvent(&ev);
++}
++#endif // AGS_PLATFORM_OS_LINUX
++
+ bool ags_iskeydown(eAGSKeyCode ags_key)
+ {
+     // old input handling: update key state in realtime
+@@ -373,6 +533,10 @@ bool ags_iskeydown(eAGSKeyCode ags_key)
+     SDL_Scancode scan[3];
+     if (!ags_key_to_sdl_scan(ags_key, scan))
+         return false;
++#if AGS_PLATFORM_OS_LINUX
++    if (gp_held[scan[0]] || gp_held[scan[1]] || gp_held[scan[2]])
++        return true;
++#endif
+     return (state[scan[0]] || state[scan[1]] || state[scan[2]]);
+ }
+ 
+@@ -1152,6 +1316,30 @@ void sys_evt_process_one(const SDL_Event &event) {
+     case SDL_MOUSEWHEEL:
+         on_sdl_mouse_wheel(event.wheel);
+         break;
++#if AGS_PLATFORM_OS_LINUX
++    // GAMEPAD
++    case SDL_CONTROLLERDEVICEADDED:
++        gp_open_first();
++        break;
++    case SDL_CONTROLLERDEVICEREMOVED:
++        if (gp_ctrl && !SDL_GameControllerGetAttached(gp_ctrl))
++        {
++            SDL_GameControllerClose(gp_ctrl);
++            gp_ctrl = nullptr;
++            gp_release_all();
++            gp_open_first();
++        }
++        break;
++    case SDL_CONTROLLERBUTTONDOWN:
++    case SDL_CONTROLLERBUTTONUP:
++        if (gp_ctrl && event.cbutton.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gp_ctrl)))
++            gp_button(event.cbutton.button, event.type == SDL_CONTROLLERBUTTONDOWN);
++        break;
++    case SDL_CONTROLLERAXISMOTION:
++        if (gp_ctrl && event.caxis.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gp_ctrl)))
++            gp_axis(event.caxis.axis, event.caxis.value);
++        break;
++#endif
+     // TOUCH INPUT
+     case SDL_FINGERDOWN:
+         on_sdl_touch_down(event.tfinger);
+@@ -1167,6 +1355,9 @@ void sys_evt_process_one(const SDL_Event &event) {
+ }
+ 
+ void sys_evt_process_pending(void) {
++#if AGS_PLATFORM_OS_LINUX
++    gp_update();
++#endif
+     SDL_Event event;
+     while (SDL_PollEvent(&event)) {
+         sys_evt_process_one(event);
