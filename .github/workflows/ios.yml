@@ -1,0 +1,31 @@
+# Builds the unsigned iPhone/iPad .ipa (see ios/build.sh). Download it from
+# the run's artifacts. Nothing is uploaded to the App Store or TestFlight.
+name: iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version
+        default: "1.0"
+  push:
+    branches: [ios]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          brew install unar
+          gem list -i xcodeproj >/dev/null || sudo gem install xcodeproj --no-document
+      - name: Build
+        run: ios/build.sh "${{ inputs.version || '1.0' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cartlife-ipa
+          path: dist/*.ipa
+          compression-level: 0

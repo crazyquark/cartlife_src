@@ -1,0 +1,233 @@
+diff --git a/Engine/ac/sys_events.cpp b/Engine/ac/sys_events.cpp
+index 7945041..dabf3c8 100644
+--- a/Engine/ac/sys_events.cpp
++++ b/Engine/ac/sys_events.cpp
+@@ -360,6 +360,11 @@ void ags_drop_next_inputevent()
+         g_inputEvtQueue.pop_front();
+ }
+ 
++#if AGS_PLATFORM_OS_IOS
++extern "C" void ios_touchpad_update();
++extern "C" bool ios_touchpad_keydown(int scancode);
++#endif
++
+ bool ags_iskeydown(eAGSKeyCode ags_key)
+ {
+     // old input handling: update key state in realtime
+@@ -373,6 +378,10 @@ bool ags_iskeydown(eAGSKeyCode ags_key)
+     SDL_Scancode scan[3];
+     if (!ags_key_to_sdl_scan(ags_key, scan))
+         return false;
++#if AGS_PLATFORM_OS_IOS
++    if (ios_touchpad_keydown(scan[0]) || ios_touchpad_keydown(scan[1]) || ios_touchpad_keydown(scan[2]))
++        return true;
++#endif
+     return (state[scan[0]] || state[scan[1]] || state[scan[2]]);
+ }
+ 
+@@ -1167,6 +1176,9 @@ void sys_evt_process_one(const SDL_Event &event) {
+ }
+ 
+ void sys_evt_process_pending(void) {
++#if AGS_PLATFORM_OS_IOS
++    ios_touchpad_update();
++#endif
+     SDL_Event event;
+     while (SDL_PollEvent(&event)) {
+         sys_evt_process_one(event);
+diff --git a/Engine/platform/ios/ios_touchpad.mm b/Engine/platform/ios/ios_touchpad.mm
+new file mode 100644
+index 0000000..c0a9bdc
+--- /dev/null
++++ b/Engine/platform/ios/ios_touchpad.mm
+@@ -0,0 +1,190 @@
++// On-screen controls for keyboard-driven games on iOS (added for Cart Life).
++//
++// Cart Life walks with the arrow keys (or A/D), talks with Up, confirms with
++// Enter and opens its menu with Space, and polls them with IsKeyPressed. An
++// iPhone has none of those keys, so this puts a small pad over the game:
++// arrows on the left; Enter, Space and the system keyboard (for the typing
++// parts) on the right; and a button to hide the pad when a real keyboard or
++// a controller is in use.
++//
++// Held buttons are reported to IsKeyPressed through ios_touchpad_keydown(),
++// and each press is also posted as an SDL key event, so on_key_press and GUI
++// controls see it too.
++#include "platform/platform.h"
++
++#if AGS_PLATFORM_OS_IOS
++#import <UIKit/UIKit.h>
++#include <SDL.h>
++
++static bool g_held[SDL_NUM_SCANCODES];
++
++static void post_key(SDL_Scancode sc, bool down)
++{
++    g_held[sc] = down;
++    SDL_Event ev = {};
++    ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
++    ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
++    ev.key.keysym.scancode = sc;
++    ev.key.keysym.sym = SDL_GetKeyFromScancode(sc);
++    ev.key.windowID = 0;
++    SDL_PushEvent(&ev);
++    if (down && sc == SDL_SCANCODE_SPACE)
++    {
++        // old games read printable keys from text input
++        SDL_Event tx = {};
++        tx.type = SDL_TEXTINPUT;
++        tx.text.text[0] = ' ';
++        SDL_PushEvent(&tx);
++    }
++}
++
++// A container that only takes touches landing on its buttons; the rest
++// reach the game underneath.
++@interface AGSPassThroughView : UIView
++@end
++@implementation AGSPassThroughView
++- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
++{
++    UIView *hit = [super hitTest:point withEvent:event];
++    return hit == self ? nil : hit;
++}
++@end
++
++@interface AGSPadButton : UIButton
++@property (nonatomic) SDL_Scancode scancode; // SDL_SCANCODE_UNKNOWN for actions
++@end
++@implementation AGSPadButton
++@end
++
++@interface AGSTouchPad : NSObject
++@property (nonatomic, strong) UIView *pad;
++@property (nonatomic, strong) AGSPadButton *toggle;
++@end
++
++@implementation AGSTouchPad
++
++- (AGSPadButton *)button:(NSString *)title key:(SDL_Scancode)sc frame:(CGRect)f
++{
++    AGSPadButton *b = [AGSPadButton buttonWithType:UIButtonTypeCustom];
++    b.scancode = sc;
++    b.frame = f;
++    [b setTitle:title forState:UIControlStateNormal];
++    [b setTitleColor:[UIColor colorWithWhite:1 alpha:0.85] forState:UIControlStateNormal];
++    b.titleLabel.font = [UIFont systemFontOfSize:f.size.height * 0.42 weight:UIFontWeightSemibold];
++    b.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.35];
++    b.layer.cornerRadius = f.size.height * 0.28;
++    b.layer.borderWidth = 1;
++    b.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
++    b.exclusiveTouch = NO;
++    if (sc != SDL_SCANCODE_UNKNOWN)
++    {
++        [b addTarget:self action:@selector(down:) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
++        [b addTarget:self action:@selector(up:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
++                                                               UIControlEventTouchCancel | UIControlEventTouchDragExit];
++    }
++    return b;
++}
++
++- (void)down:(AGSPadButton *)b
++{
++    if (!g_held[b.scancode]) post_key(b.scancode, true);
++    b.backgroundColor = [UIColor colorWithWhite:0.9 alpha:0.45];
++}
++
++- (void)up:(AGSPadButton *)b
++{
++    if (g_held[b.scancode]) post_key(b.scancode, false);
++    b.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.35];
++}
++
++- (void)keyboard:(UIButton *)b
++{
++    if (SDL_IsTextInputActive()) SDL_StopTextInput();
++    else SDL_StartTextInput();
++}
++
++- (void)togglePad:(UIButton *)b
++{
++    self.pad.hidden = !self.pad.hidden;
++    [self.toggle setTitle:(self.pad.hidden ? @"◇" : @"×") forState:UIControlStateNormal];
++    if (self.pad.hidden)
++        for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
++            if (g_held[i]) post_key((SDL_Scancode)i, false);
++}
++
++- (void)installIn:(UIView *)root
++{
++    CGRect bounds = root.bounds;
++    CGFloat s = MIN(bounds.size.width, bounds.size.height);
++    CGFloat k = MAX(44, MIN(64, s * 0.13)); // button size
++    CGFloat g = 6;                          // gap
++    UIEdgeInsets safe = root.safeAreaInsets;
++    CGFloat m = 10;
++
++    self.pad = [[AGSPassThroughView alloc] initWithFrame:bounds];
++    self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++    self.pad.userInteractionEnabled = YES;
++    self.pad.backgroundColor = UIColor.clearColor;
++
++    UIView *left = [[AGSPassThroughView alloc] initWithFrame:CGRectMake(safe.left + m, bounds.size.height - safe.bottom - m - 3 * k - 2 * g,
++                                                            3 * k + 2 * g, 3 * k + 2 * g)];
++    left.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin;
++    [left addSubview:[self button:@"▲" key:SDL_SCANCODE_UP frame:CGRectMake(k + g, 0, k, k)]];
++    [left addSubview:[self button:@"◀" key:SDL_SCANCODE_LEFT frame:CGRectMake(0, k + g, k, k)]];
++    [left addSubview:[self button:@"▶" key:SDL_SCANCODE_RIGHT frame:CGRectMake(2 * (k + g), k + g, k, k)]];
++    [left addSubview:[self button:@"▼" key:SDL_SCANCODE_DOWN frame:CGRectMake(k + g, 2 * (k + g), k, k)]];
++
++    CGFloat rw = 2 * k + g;
++    UIView *right = [[AGSPassThroughView alloc] initWithFrame:CGRectMake(bounds.size.width - safe.right - m - rw,
++                                                             bounds.size.height - safe.bottom - m - 2 * k - g, rw, 2 * k + g)];
++    right.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
++    [right addSubview:[self button:@"⏎" key:SDL_SCANCODE_RETURN frame:CGRectMake(k + g, 0, k, k)]];
++    [right addSubview:[self button:@"␣" key:SDL_SCANCODE_SPACE frame:CGRectMake(0, 0, k, k)]];
++    AGSPadButton *kb = [self button:@"⌨" key:SDL_SCANCODE_UNKNOWN frame:CGRectMake(0, k + g, rw, k)];
++    [kb addTarget:self action:@selector(keyboard:) forControlEvents:UIControlEventTouchUpInside];
++    [right addSubview:kb];
++
++    [self.pad addSubview:left];
++    [self.pad addSubview:right];
++    [root addSubview:self.pad];
++
++    CGFloat t = 36;
++    self.toggle = [self button:@"×" key:SDL_SCANCODE_UNKNOWN
++                         frame:CGRectMake(bounds.size.width - safe.right - m - t, safe.top + m, t, t)];
++    self.toggle.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
++    [self.toggle addTarget:self action:@selector(togglePad:) forControlEvents:UIControlEventTouchUpInside];
++    [root addSubview:self.toggle];
++}
++
++@end
++
++static AGSTouchPad *g_pad = nil;
++
++static UIView *find_root_view()
++{
++    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes)
++    {
++        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
++        for (UIWindow *w in ((UIWindowScene *)scene).windows)
++            if (w.rootViewController.view && w.bounds.size.width > 0)
++                return w.rootViewController.view;
++    }
++    return nil;
++}
++
++// Called once per engine event poll; installs the pad when the game window exists.
++extern "C" void ios_touchpad_update()
++{
++    if (g_pad) return;
++    UIView *root = find_root_view();
++    if (!root || root.bounds.size.width <= 0 || !root.window) return;
++    g_pad = [AGSTouchPad new];
++    [g_pad installIn:root];
++}
++
++extern "C" bool ios_touchpad_keydown(int scancode)
++{
++    return scancode > 0 && scancode < SDL_NUM_SCANCODES && g_held[scancode];
++}
++
++#endif
