@@ -8,13 +8,16 @@ on:
       version:
         description: Version
         default: "1.0"
+      runner:
+        description: macOS runner image (when one is busy, try another)
+        default: macos-15
   push:
     branches: [ios]
     paths: ["ios/**", ".github/workflows/ios.yml"]
 
 jobs:
   ipa:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
