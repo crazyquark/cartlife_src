@@ -36,7 +36,7 @@ if [[ ! -d $ags ]]; then
   git clone -q --depth 1 -b "$AGS_TAG" https://github.com/adventuregamestudio/ags "$ags"
   git -C "$ags" apply "$here/ags-touchpad.patch"
   (cd "$ags/libsrc" && ./download.sh >/dev/null)
-  ruby "$here/add_touchpad.rb" "$ags/iOS/xcode/ags/AGS.xcodeproj"
+  ruby "$here/fix_project.rb" "$ags"
   # The app links SDL2.framework, so Xcode's implicit dependencies also pull
   # in SDL's macOS "Framework" target, which writes the same SDL2.framework
   # as the explicit "Framework-iOS" dependency. Build only the explicit chain.
