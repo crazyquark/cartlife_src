@@ -65,10 +65,15 @@ xcodebuild -project "$ags/iOS/xcode/ags/AGS.xcodeproj" -scheme "AGS Game" \
   -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath "$dd" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
-  build | grep -E "^(\*\*|error|.*error:|.*warning: .*touchpad)" || true
+  build > "$work/xcodebuild.log" 2>&1 || true
+grep -E "^\*\*|error:|warning: .*touchpad" "$work/xcodebuild.log" || true
 
 app="$dd/Build/Products/Release-iphoneos/AGS Game.app"
-[[ -f $app/Info.plist ]] || { echo "build failed"; exit 1; }
+if [[ ! -f $app/Info.plist ]]; then
+  grep -E -A3 "Undefined symbols|duplicate symbol|referenced from|ld: " "$work/xcodebuild.log" | head -150
+  echo "build failed (full log: build/ios/xcodebuild.log)"
+  exit 1
+fi
 
 # 5. The sprite volumes aren't in the Xcode project: add them to the bundle.
 cp "$game/cartlife.001" "$game/cartlife.002" "$app/"

@@ -32,3 +32,8 @@ jobs:
           name: cartlife-ipa
           path: dist/*.ipa
           compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: build/ios/xcodebuild.log
