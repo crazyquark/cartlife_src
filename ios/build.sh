@@ -65,9 +65,6 @@ xcodebuild -project "$ags/iOS/xcode/ags/AGS.xcodeproj" -scheme "AGS Game" \
   -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath "$dd" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
-  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION=1 \
-  INFOPLIST_KEY_CFBundleDisplayName="Cart Life" \
-  INFOPLIST_KEY_LSApplicationCategoryType=public.app-category.simulation-games \
   build | grep -E "^(\*\*|error|.*error:|.*warning: .*touchpad)" || true
 
 app="$dd/Build/Products/Release-iphoneos/AGS Game.app"
@@ -75,8 +72,15 @@ app="$dd/Build/Products/Release-iphoneos/AGS Game.app"
 
 # 5. The sprite volumes aren't in the Xcode project: add them to the bundle.
 cp "$game/cartlife.001" "$game/cartlife.002" "$app/"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Cart Life" "$app/Info.plist" 2>/dev/null ||
-  /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Cart Life" "$app/Info.plist"
+# Identity on the app only (on the command line it would also reach the
+# embedded frameworks, and iOS refuses duplicate bundle IDs).
+plist() { /usr/libexec/PlistBuddy -c "Set :$1 $3" "$app/Info.plist" 2>/dev/null ||
+          /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$app/Info.plist"; }
+plist CFBundleIdentifier string "$BUNDLE_ID"
+plist CFBundleDisplayName string "Cart Life"
+plist CFBundleName string "Cart Life"
+plist CFBundleShortVersionString string "$VERSION"
+plist LSApplicationCategoryType string public.app-category.simulation-games
 /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$app/Info.plist" 2>/dev/null || true
 
 # 6. Pack.
