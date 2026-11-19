@@ -1,0 +1,87 @@
+# Builds both Cart Life assets: the unsigned iPhone/iPad .ipa (ios/build.sh,
+# for LiveContainer or other sideloading) and the Linux / Steam Deck
+# AppImage (linux/build.sh).
+#
+# - Push a tag vX.Y: builds both and attaches them to a GitHub Release.
+# - Run it by hand: builds both; download them from the run's artifacts.
+#
+# Nothing is uploaded to the App Store or TestFlight.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version
+        default: "1.0"
+      mac_runner:
+        description: macOS runner image (when one is busy, try another)
+        default: macos-15-intel
+
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || '1.0' }}
+
+jobs:
+  ios:
+    runs-on: ${{ inputs.mac_runner || 'macos-15-intel' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          brew install unar
+          gem list -i xcodeproj >/dev/null || sudo gem install xcodeproj --no-document
+      - name: Build
+        run: ios/build.sh "${VERSION#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cartlife-ipa
+          path: dist/*.ipa
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: build/ios/xcodebuild.log
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq ninja-build unar libfuse2 \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev
+      - name: Build
+        run: linux/build.sh "${VERSION#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cartlife-appimage
+          path: dist/*.AppImage
+          compression-level: 0
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [ios, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Cart Life $GITHUB_REF_NAME" \
+            --notes "Unsigned iPhone/iPad .ipa (sideload with LiveContainer, AltStore, SideStore or Sideloadly) and a Linux / Steam Deck AppImage with controller support."
