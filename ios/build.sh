@@ -87,6 +87,19 @@ plist CFBundleName string "Cart Life"
 plist CFBundleShortVersionString string "$VERSION"
 plist LSApplicationCategoryType string public.app-category.simulation-games
 /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$app/Info.plist" 2>/dev/null || true
+# The project's launch storyboard and asset catalog aren't in its build
+# phases. Without a launch screen iOS letterboxes the app at an old iPhone
+# size, so declare an empty one; and ship the icon as plain PNGs.
+/usr/libexec/PlistBuddy -c "Delete :UILaunchStoryboardName" "$app/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" "$app/Info.plist" 2>/dev/null || true
+for s in 120 180 152 167; do sips -z $s $s "$here/AppIcon.png" --out "$app/AppIcon$s.png" >/dev/null; done
+for key in CFBundleIcons CFBundleIcons~ipad; do
+  /usr/libexec/PlistBuddy -c "Delete :$key" "$app/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :$key:CFBundlePrimaryIcon:CFBundleIconFiles array" "$app/Info.plist"
+  for s in 120 180 152 167; do
+    /usr/libexec/PlistBuddy -c "Add :$key:CFBundlePrimaryIcon:CFBundleIconFiles: string AppIcon$s" "$app/Info.plist"
+  done
+done
 
 # 6. Pack.
 out=$root/dist/cartlife-$VERSION.ipa
