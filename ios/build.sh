@@ -37,6 +37,11 @@ if [[ ! -d $ags ]]; then
   git -C "$ags" apply "$here/ags-touchpad.patch"
   (cd "$ags/libsrc" && ./download.sh >/dev/null)
   ruby "$here/add_touchpad.rb" "$ags/iOS/xcode/ags/AGS.xcodeproj"
+  # The app links SDL2.framework, so Xcode's implicit dependencies also pull
+  # in SDL's macOS "Framework" target, which writes the same SDL2.framework
+  # as the explicit "Framework-iOS" dependency. Build only the explicit chain.
+  sed -i '' 's/buildImplicitDependencies = "YES"/buildImplicitDependencies = "NO"/' \
+    "$ags/iOS/xcode/ags/AGS.xcodeproj/xcshareddata/xcschemes/AGS Game.xcscheme"
 fi
 
 # 3. Game files where the Xcode project expects them, settings and icon.
@@ -63,7 +68,7 @@ xcodebuild -project "$ags/iOS/xcode/ags/AGS.xcodeproj" -scheme "AGS Game" \
   PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION=1 \
   INFOPLIST_KEY_CFBundleDisplayName="Cart Life" \
   INFOPLIST_KEY_LSApplicationCategoryType=public.app-category.simulation-games \
-  build | grep -E "^(\*\*|error|.*error:)" || true
+  build | grep -E "^(\*\*|error|.*error:|.*warning: .*touchpad)" || true
 
 app="$dd/Build/Products/Release-iphoneos/AGS Game.app"
 [[ -f $app/Info.plist ]] || { echo "build failed"; exit 1; }
