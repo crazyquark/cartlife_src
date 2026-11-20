@@ -71,8 +71,9 @@ group = project.main_group.find_subpath('Sync', true)
   end
 end
 
-# ios_touchpad.mm draws its buttons with UIKit.
+# ios_touchpad.mm draws its buttons with UIKit (and moves them with CoreGraphics).
 engine.add_system_framework('UIKit')
+engine.add_system_framework('CoreGraphics')
 
 # 3. Header paths the new files need.
 [engine, vendor].each do |t|
