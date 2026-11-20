@@ -37,10 +37,10 @@ index 7945041..dabf3c8 100644
          sys_evt_process_one(event);
 diff --git a/Engine/platform/ios/ios_touchpad.mm b/Engine/platform/ios/ios_touchpad.mm
 new file mode 100644
-index 0000000..c0a9bdc
+index 0000000..0a5d36d
 --- /dev/null
 +++ b/Engine/platform/ios/ios_touchpad.mm
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,242 @@
 +// On-screen controls for keyboard-driven games on iOS (added for Cart Life).
 +//
 +// Cart Life walks with the arrow keys (or A/D), talks with Up, confirms with
@@ -49,6 +49,9 @@ index 0000000..c0a9bdc
 +// arrows on the left; Enter, Space and the system keyboard (for the typing
 +// parts) on the right; and a button to hide the pad when a real keyboard or
 +// a controller is in use.
++//
++// The system keyboard pushes the pad up so the keyboard button stays in
++// reach, and that button (or Return, or the × button) closes it again.
 +//
 +// Held buttons are reported to IsKeyPressed through ios_touchpad_keydown(),
 +// and each press is also posted as an SDL key event, so on_key_press and GUI
@@ -101,7 +104,12 @@ index 0000000..c0a9bdc
 +
 +@interface AGSTouchPad : NSObject
 +@property (nonatomic, strong) UIView *pad;
++@property (nonatomic, strong) UIView *root;
 +@property (nonatomic, strong) AGSPadButton *toggle;
++@property (nonatomic, strong) AGSPadButton *kbButton;
++@property (nonatomic) BOOL kbVisible;
++@property (nonatomic) CGFloat bottomOfButtons; // in root coordinates, pad not lifted
++@property (nonatomic) CGFloat clusterHeight;   // the tallest button group
 +@end
 +
 +@implementation AGSTouchPad
@@ -140,14 +148,48 @@ index 0000000..c0a9bdc
 +    b.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.35];
 +}
 +
++// SDL_StopTextInput also turns text events off, but the engine reads Space
++// (and a hardware keyboard's letters) from them, so turn them back on.
++static void close_keyboard()
++{
++    SDL_StopTextInput();
++    SDL_EventState(SDL_TEXTINPUT, SDL_ENABLE);
++}
++
 +- (void)keyboard:(UIButton *)b
 +{
-+    if (SDL_IsTextInputActive()) SDL_StopTextInput();
++    // SDL counts text input as active from the start, keyboard or not, so go
++    // by what is on screen.
++    if (self.kbVisible) close_keyboard();
 +    else SDL_StartTextInput();
++}
++
++- (void)keyboardFrame:(NSNotification *)n
++{
++    CGRect kb = [self.root convertRect:[n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue] fromView:nil];
++    CGFloat top = kb.origin.y;
++    BOOL visible = kb.size.height > 0 && top < self.root.bounds.size.height;
++    self.kbVisible = visible;
++    [self.kbButton setTitle:(visible ? @"⌨ ▾" : @"⌨") forState:UIControlStateNormal];
++    // Lift the pad above the keyboard, but not past the top of the screen.
++    CGFloat lift = visible ? MAX(0, self.bottomOfButtons + 10 - top) : 0;
++    lift = MIN(lift, MAX(0, self.bottomOfButtons - self.root.safeAreaInsets.top - self.clusterHeight));
++    double dur = [n.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
++    [UIView animateWithDuration:dur animations:^{ self.pad.transform = CGAffineTransformMakeTranslation(0, -lift); }];
++}
++
++- (void)keyboardHidden:(NSNotification *)n
++{
++    self.kbVisible = NO;
++    [self.kbButton setTitle:@"⌨" forState:UIControlStateNormal];
++    self.pad.transform = CGAffineTransformIdentity;
++    // closed by iOS (Return, the iPad's hide key): text events back on
++    SDL_EventState(SDL_TEXTINPUT, SDL_ENABLE);
 +}
 +
 +- (void)togglePad:(UIButton *)b
 +{
++    if (!self.pad.hidden && self.kbVisible) close_keyboard();
 +    self.pad.hidden = !self.pad.hidden;
 +    [self.toggle setTitle:(self.pad.hidden ? @"◇" : @"×") forState:UIControlStateNormal];
 +    if (self.pad.hidden)
@@ -186,6 +228,16 @@ index 0000000..c0a9bdc
 +    AGSPadButton *kb = [self button:@"⌨" key:SDL_SCANCODE_UNKNOWN frame:CGRectMake(0, k + g, rw, k)];
 +    [kb addTarget:self action:@selector(keyboard:) forControlEvents:UIControlEventTouchUpInside];
 +    [right addSubview:kb];
++    self.kbButton = kb;
++    self.root = root;
++    self.bottomOfButtons = bounds.size.height - safe.bottom - m;
++    self.clusterHeight = 3 * k + 2 * g;
++
++    // Return on the system keyboard closes it, as the typed text is done.
++    SDL_SetHint(SDL_HINT_RETURN_KEY_HIDES_IME, "1");
++    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
++    [nc addObserver:self selector:@selector(keyboardFrame:) name:UIKeyboardWillChangeFrameNotification object:nil];
++    [nc addObserver:self selector:@selector(keyboardHidden:) name:UIKeyboardDidHideNotification object:nil];
 +
 +    [self.pad addSubview:left];
 +    [self.pad addSubview:right];
